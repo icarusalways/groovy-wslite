@@ -148,19 +148,36 @@ class HTTPClient {
 
     private HTTPResponse buildResponse(conn, responseStream) {
         def response = new HTTPResponse()
-        response.data = getResponseContent(responseStream, conn.contentEncoding)
+        
+        println("building response")
+
         response.statusCode = conn.responseCode
         response.statusMessage = conn.responseMessage
         response.url = conn.URL
         response.contentEncoding = conn.contentEncoding
         response.contentLength = conn.contentLength
+        
         ContentTypeHeader contentTypeHeader = new ContentTypeHeader(conn.contentType)
         response.contentType = contentTypeHeader.mediaType
         response.charset = contentTypeHeader.charset
+        response.contentTypeHeader = contentTypeHeader
+
         response.date = new Date(conn.date)
         response.expiration = new Date(conn.expiration)
         response.lastModified = new Date(conn.lastModified)
         response.headers = headersToMap(conn)
+
+        if(contentTypeHeader.isMtom){
+            println("ContentType Header is mtom")
+            parseMtomMessage(response, conn)
+            //only store the soap text in the data byte[]
+            //refine later
+            response.data = getResponseContent(responseStream, conn.contentEncoding)
+        } else {
+            println("ContentType Header is not mtom")
+            response.data = getResponseContent(responseStream, conn.contentEncoding)
+        }
+
         return response
     }
 
@@ -177,6 +194,179 @@ class HTTPClient {
             headers[entry.key ?: ''] = entry.value.size() > 1 ? entry.value : entry.value[0]
         }
         return headers
+    }
+
+    private void parseMtomMessage(httpResponse, responseStream){
+
+        def contentTypeHeader = httpResponse.contentTypeHeader
+        
+        String boundary = contentTypeHeader.boundary
+        //add the dashes so they don't get parsed into the message
+        //TODO: make a configuration option 
+        boundary = "--"+boundary
+
+        println("parsing mtom message with boundary "+boundary)
+
+        byte[] bbytes = boundary.bytes
+
+        int numIndiciesHeld = 0;
+
+        //window that will scan through the stream. Used to check for mime boundaries
+        byte[] boundaryChecker = new byte[bbytes.length]
+
+        //save the previous byte
+        byte lastByte = (byte)0;
+
+        //list of each of the mtom message parts
+        def messageParts = []
+
+        //structure holding 1 message part. Will have a type, the headers, and content. Content may be a file name or byte array.
+        def messagePart = ["headers":[], "type":"unkown", "content":[]]
+        //list of headers per message part
+        def headers = []
+        //container for the bytes
+        def content = []
+
+        //place to keep the bytes found for a header
+        def tempMessagePartHeader = []
+        //temp file we need to store attachments
+        File tempAttachment = null;
+        //FileOutputStream to write bytes to temp file
+        def fos = null
+        boolean inMessagePart = false;
+        int numMessagePartsFound = 0;
+        int numLineFeedsFound = 0
+        boolean isMessageContent = false;
+        boolean boundaryFoundThisByte = false
+
+        response.eachByte{ b -> 
+            //update the boundary checker with the new byte (forcing the byte on the left of the buffer out if length if met)
+            numIndiciesHeld = updateBoundaryChecker(boundaryChecker, numIndiciesHeld, b)
+            
+            //test if the buffer equals the bytes of the boundary (we've found a boundary)
+            if(Arrays.equals(boundaryChecker, bbytes)){
+                println("found boundary")
+                inMessagePart = true
+                boundaryFoundThisByte = true
+                numMessagePartsFound++
+                if(numMessagePartsFound > 1){
+                    //clean up content
+                    if(messagePart["type"] == "soap"){
+                        //content was the soap message and should be a byte array containing the message
+                        //copy the message truncating the written mime boundary (could be heavy on memory for large soap responses)
+                        byte[] contentBytes = messagePart["content"] as byte[]
+                        messagePart["content"] = new String(Arrays.copyOf(messagePart["content"] as byte[], contentBytes.length - bbytes.length+1))
+                    } else {
+                         //content was an attachment
+                        //first close the steam to the file
+                        if(fos != null){
+                            try{
+                                fos.close()
+                            } catch (Exception closeEx){
+                                println("Unable to close output stream to file for attachment")
+                                closeEx.printStackTrace()
+                            }
+                        }
+                        try{
+                            //use tempAttachment File reference to truncate the end of the file
+                            RandomAccessFile raf = new RandomAccessFile(tempAttachment, "rw")
+                            //remove the mimeboundary plus the line feed from the end of the file
+                            raf.setLength(raf.length() - bbytes.length+1)
+                            //release resources
+                            raf.close()
+                        } catch (Exception rafEx){
+                            println("Exception while truncating attachment")
+                            rafEx.printStackTrace()
+                        }
+                    }
+                    //add this message part to the list of message parts
+                    messageParts << messagePart
+                    //initialize messagePart
+                    messagePart = ["headers":[], "type":"unkown", "content":[]]
+                    //reset variables for further processing
+                    numLineFeedsFound = 0
+                    isMessageContent = false
+                }
+            } else {
+                boundaryFoundThisByte = false
+            }
+            if(inMessagePart && !boundaryFoundThisByte){
+                if(!isMessageContent){
+                    //we are dealing with headers
+                    if(b != (byte)10){
+                        //this is assuming that a header will not have a line feed in it and that headers are broken up by line feeds
+                        tempMessagePartHeader << b
+                        numLineFeedsFound = 0
+                    } else {
+                        numLineFeedsFound++
+                        if(numLineFeedsFound == 1 && tempMessagePartHeader.size() > 0){
+                            def header = new String(tempMessagePartHeader as byte[])
+                            messagePart["headers"] << header
+                            //check each header when it's added to see if it is the soap response
+                            if(header.contains("application/xop+xml")){
+                                messagePart["type"] = "soap"
+                            }
+                        }
+                    }
+                    if(numLineFeedsFound == 2){
+                        //next byte will be part of messagePart content. Do nothing with this byte
+                        isMessageContent = true
+                    }
+                } else {
+                    if(messagePart["type"] == "soap"){
+                        //soap message written directly to content of messagePart (memory)
+                        messagePart["content"] << b
+                    } else {
+                        if(messagePart["type"] == "unknown"){
+                            messagePart["type"] == "attachment"
+                        }
+                        //this is an attachment. Write it out to disk using tempFile
+                        //write to disk
+                        if(tempAttachment == null || !tempAttachment.exists()){
+                            try{
+                                tempAttachment = File.createTempFile("message", ".dat");
+                                messagePart["content"] = tempAttachment.getAbsolutePath()
+                                fos = new FileOutputStream(tempAttachment);
+                                println("writing attachment to ${tempAttachment.getAbsolutePath()}")
+                            } catch(Exception e){
+                                println("unable to write attachment to disk")
+                                e.printStackTrace()
+                            }
+                        }
+                        if(fos != null){
+                            fos.write(b)
+                        }
+                    }
+                }
+            }
+        }
+
+        println(messageParts)
+
+        messageParts.each {mp ->
+            if(mp["type"] == "soap"){
+                httpResponse.data = mp["content"] as byte[]
+                println("set response data as byte[]")
+            }
+        }
+    }
+
+    private int updateBoundaryChecker(boundaryChecker, numIndiciesHeld, byte newB){
+        if(numIndiciesHeld < boundaryChecker.length){
+            boundaryChecker[numIndiciesHeld] = newB
+            numIndiciesHeld++
+            return numIndiciesHeld
+        } else {
+            //shift every byte down one index (get rid of the furthest left)
+            for(int i = 0; i < boundaryChecker.length; i++){
+                if(i+1 < boundaryChecker.length){
+                    boundaryChecker[i] = boundaryChecker[i+1]
+                } else {
+                    boundaryChecker[i] = newB
+                }
+            }
+            return numIndiciesHeld
+        }
     }
 
     /**

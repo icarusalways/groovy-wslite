@@ -28,6 +28,12 @@ class HTTPResponse {
     Date date
     Date expiration
     Date lastModified
+    
+    //added to support mtom
+    ContentTypeHeader contentTypeHeader
+
+    //added to support mtom attachments
+    def attachments = []
 
     Map headers = new TreeMap(String.CASE_INSENSITIVE_ORDER)
     byte[] data

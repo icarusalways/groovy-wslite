@@ -25,6 +25,8 @@ class SOAPClient {
     boolean validating = false
     boolean namespaceAware = true
 
+    boolean mtomEnabled = false
+
     SOAPClient() {
         this.httpClient = new HTTPClient()
     }
@@ -84,6 +86,7 @@ class SOAPClient {
 
     private SOAPResponse buildSOAPResponse(httpRequest, httpResponse) {
         SOAPResponse response
+        
         try {
             String soapMessageText = httpResponse.contentAsString
             def soapEnvelope = soapMessageText ? parseEnvelope(soapMessageText) : null

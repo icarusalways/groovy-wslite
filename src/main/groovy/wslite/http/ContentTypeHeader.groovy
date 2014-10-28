@@ -58,18 +58,69 @@ class ContentTypeHeader {
     final String contentType
     final String mediaType
     final String charset
+    
+    boolean isMtom = false
+    String boundary = null
+    def contentTypeSpecification
 
     ContentTypeHeader(final String contentType) {
         if (contentType) {
             this.contentType = contentType
             this.mediaType = parseMediaType(contentType)
             this.charset = parseCharset(contentType)
+            checkMtom()
+            if(isMtom){
+                println("is mtom in ContentTypeHeader")
+                parseBoundary()
+            } else {
+                println("not mtom in ContentTypeHeader")
+            }
         }
     }
 
     @Override
     String toString() {
         return contentType
+    }
+
+    private void checkMtom(){
+        
+        println("Checking mtom")
+
+        println("ContentType=${contentType}")
+        
+        contentTypeSpecification = contentType.split(";").collect{value -> value.trim()}
+        
+        boolean mtom = true
+        
+        if(!contentTypeSpecification.contains("multipart/related")){
+            mtom = false
+            println("not multipart")
+        }
+        if(!contentTypeSpecification.contains('type="application/xop+xml"')) {
+            mtom = false
+            println("not application/xop")
+        }
+        if(!(contentTypeSpecification.contains('start-info="text/xml"') || contentTypeSpecification.contains('start-info="application/soap+xml"'))) {
+            mtom = false
+            println("not start-info")
+        }
+
+        isMtom = mtom
+    }
+
+    private void parseBoundary(){
+        
+        println("parsing boundary")
+
+        contentTypeSpecification.each{val -> 
+            if(val.contains("boundary")){
+                def boundaryKV = val.split("=");
+                if(boundaryKV.size() >= 2){
+                    boundary = boundaryKV[1].replaceAll('"', '').trim();
+                }
+            }
+        }
     }
 
     private String parseMediaType(String contentType) {
