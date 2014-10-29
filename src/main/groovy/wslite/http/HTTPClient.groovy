@@ -253,14 +253,35 @@ class HTTPClient {
 
         long startTime = System.currentTimeMillis()
 
-        responseStream.eachByte{ b -> 
-            //update the boundary checker with the new byte (forcing the byte on the left of the buffer out if length if met)
-            long updateBoundaryCheckerTimeStart = System.currentTimeMillis()
-            numIndiciesHeld = updateBoundaryChecker(boundaryChecker, numIndiciesHeld, b)
-            totalBoundaryUpdateTime += System.currentTimeMillis() - updateBoundaryCheckerTimeStart
+        //allows the investigation of a series of bytes
+        boolean updateBoundaryWindow = false
+        //holds the number of bytes used for this investigation of a possible boundary
+        int numBytesInBoundaryCheck = 0
+
+        responseStream.eachByte{ b ->
+            if(b == bbytes[0]){
+                //turn on boundary checker for the length of the boundary... we may have the start of a match
+                updateBoundaryWindow = true
+            }
+
+            if(updateBoundaryWindow){
+                if(numBytesInBoundaryCheck < bbytes.length){
+                    //update the boundary checker with the new byte (forcing the byte on the left of the buffer out if length if met)
+                    long updateBoundaryCheckerTimeStart = System.currentTimeMillis()
+                    numIndiciesHeld = updateBoundaryChecker(boundaryChecker, numIndiciesHeld, b)
+                    totalBoundaryUpdateTime += System.currentTimeMillis() - updateBoundaryCheckerTimeStart
+                    numBytesInBoundaryCheck++
+                } else {
+                    updateBoundaryWindow = false
+                    numBytesInBoundaryCheck = 0
+                }
+            }
             
             //test if the buffer equals the bytes of the boundary (we've found a boundary)
             if(Arrays.equals(boundaryChecker, bbytes)){
+                //update the boundary with one more byte so we don't continue to find a boundary
+                updateBoundaryChecker(boundaryChecker, numIndiciesHeld, b)
+                 
                 println("found boundary")
                 inMessagePart = true
                 boundaryFoundThisByte = true
