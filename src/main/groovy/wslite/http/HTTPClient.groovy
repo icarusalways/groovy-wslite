@@ -169,10 +169,16 @@ class HTTPClient {
 
         if(contentTypeHeader.isMtom){
             println("ContentType Header is mtom")
-            parseMtomMessage(response, conn)
+            try {
+                parseMtomMessage(response, conn.getInputStream())
+            } catch (Exception e){
+                println("unable to parse mtom message")
+                e.printStackTrace()
+            }
+            
             //only store the soap text in the data byte[]
             //refine later
-            response.data = getResponseContent(responseStream, conn.contentEncoding)
+            //response.data = getResponseContent(responseStream, conn.contentEncoding)
         } else {
             println("ContentType Header is not mtom")
             response.data = getResponseContent(responseStream, conn.contentEncoding)
@@ -213,6 +219,7 @@ class HTTPClient {
 
         //window that will scan through the stream. Used to check for mime boundaries
         byte[] boundaryChecker = new byte[bbytes.length]
+        long totalBoundaryUpdateTime = 0
 
         //save the previous byte
         byte lastByte = (byte)0;
@@ -233,15 +240,24 @@ class HTTPClient {
         File tempAttachment = null;
         //FileOutputStream to write bytes to temp file
         def fos = null
+        //buffer for writing to disc more efficiently
+        def buffer = new byte[4096]
+        int numBytesInBuffer = 0
+        long totalWriteTime = 0
+
         boolean inMessagePart = false;
         int numMessagePartsFound = 0;
         int numLineFeedsFound = 0
         boolean isMessageContent = false;
         boolean boundaryFoundThisByte = false
 
-        response.eachByte{ b -> 
+        long startTime = System.currentTimeMillis()
+
+        responseStream.eachByte{ b -> 
             //update the boundary checker with the new byte (forcing the byte on the left of the buffer out if length if met)
+            long updateBoundaryCheckerTimeStart = System.currentTimeMillis()
             numIndiciesHeld = updateBoundaryChecker(boundaryChecker, numIndiciesHeld, b)
+            totalBoundaryUpdateTime += System.currentTimeMillis() - updateBoundaryCheckerTimeStart
             
             //test if the buffer equals the bytes of the boundary (we've found a boundary)
             if(Arrays.equals(boundaryChecker, bbytes)){
@@ -252,12 +268,29 @@ class HTTPClient {
                 if(numMessagePartsFound > 1){
                     //clean up content
                     if(messagePart["type"] == "soap"){
+                        println("content was soap")
                         //content was the soap message and should be a byte array containing the message
                         //copy the message truncating the written mime boundary (could be heavy on memory for large soap responses)
                         byte[] contentBytes = messagePart["content"] as byte[]
-                        messagePart["content"] = new String(Arrays.copyOf(messagePart["content"] as byte[], contentBytes.length - bbytes.length+1))
+                        //println(messagePart["content"])
+                        //println(contentBytes.length)
+                        messagePart["content"] = new String(Arrays.copyOf(contentBytes, contentBytes.length - bbytes.length+1))
                     } else {
-                         //content was an attachment
+                        println("content was attachment")
+                        //content was an attachment
+                        //check if there are bytes left to write
+                        if(numBytesInBuffer > 0){
+                            //write out the bytes
+                            if(fos != null){
+                                long startWriteTime = System.currentTimeMillis()
+                                fos.write(buffer, 0, numBytesInBuffer)
+                                totalWriteTime += System.currentTimeMillis() - startWriteTime
+                                println("wrote entrie attachment in ${totalWriteTime}")
+                                numBytesInBuffer = 0
+                            } else {
+                                println("unempty buffer buf file was already closed!!")
+                            }
+                        }
                         //first close the steam to the file
                         if(fos != null){
                             try{
@@ -268,12 +301,16 @@ class HTTPClient {
                             }
                         }
                         try{
+                            long rafTimer = System.currentTimeMillis()
                             //use tempAttachment File reference to truncate the end of the file
                             RandomAccessFile raf = new RandomAccessFile(tempAttachment, "rw")
                             //remove the mimeboundary plus the line feed from the end of the file
                             raf.setLength(raf.length() - bbytes.length+1)
+                            println("truncated filed in ${System.currentTimeMillis() - rafTimer}")
                             //release resources
                             raf.close()
+                            tempAttachment = null
+
                         } catch (Exception rafEx){
                             println("Exception while truncating attachment")
                             rafEx.printStackTrace()
@@ -293,19 +330,26 @@ class HTTPClient {
             if(inMessagePart && !boundaryFoundThisByte){
                 if(!isMessageContent){
                     //we are dealing with headers
-                    if(b != (byte)10){
+                    if(b != (byte)10 && b != (byte)13){
                         //this is assuming that a header will not have a line feed in it and that headers are broken up by line feeds
                         tempMessagePartHeader << b
+                        //println("setting line feed to 0")
                         numLineFeedsFound = 0
                     } else {
-                        numLineFeedsFound++
+                        if(b != (byte)13){
+                            numLineFeedsFound++
+                        }
+                        //println("found line feed. ${numLineFeedsFound}")
                         if(numLineFeedsFound == 1 && tempMessagePartHeader.size() > 0){
                             def header = new String(tempMessagePartHeader as byte[])
                             messagePart["headers"] << header
                             //check each header when it's added to see if it is the soap response
                             if(header.contains("application/xop+xml")){
                                 messagePart["type"] = "soap"
+                                println("found header : ${header}\nsetting message part type to soap")
                             }
+                            //clear the tempHeader for the next one
+                            tempMessagePartHeader = []
                         }
                     }
                     if(numLineFeedsFound == 2){
@@ -316,13 +360,15 @@ class HTTPClient {
                     if(messagePart["type"] == "soap"){
                         //soap message written directly to content of messagePart (memory)
                         messagePart["content"] << b
+                        //println(messagePart["content"])
                     } else {
                         if(messagePart["type"] == "unknown"){
                             messagePart["type"] == "attachment"
                         }
                         //this is an attachment. Write it out to disk using tempFile
                         //write to disk
-                        if(tempAttachment == null || !tempAttachment.exists()){
+                        //if(tempAttachment == null || !tempAttachment.existempAttachmentts()){
+                        if(tempAttachment == null){
                             try{
                                 tempAttachment = File.createTempFile("message", ".dat");
                                 messagePart["content"] = tempAttachment.getAbsolutePath()
@@ -334,13 +380,28 @@ class HTTPClient {
                             }
                         }
                         if(fos != null){
-                            fos.write(b)
+                            if(numBytesInBuffer < buffer.length){
+                                buffer[numBytesInBuffer] = b
+                                numBytesInBuffer++
+                            } else {
+                                long startWriteTime = System.currentTimeMillis()
+                                fos.write(buffer, 0, numBytesInBuffer)
+                                //Thread.sleep(1000)
+                                long writeTime = System.currentTimeMillis() - startWriteTime
+                                totalWriteTime += writeTime
+                                println("wrote ${numBytesInBuffer} in ${writeTime}")
+                                numBytesInBuffer = 0
+                                buffer[numBytesInBuffer] = b
+                                numBytesInBuffer++
+                            }
                         }
                     }
                 }
             }
         }
-
+        println("total boundary update time ${totalBoundaryUpdateTime}")
+        println("time it took to parse mtom message ${System.currentTimeMillis() - startTime}")
+        
         println(messageParts)
 
         messageParts.each {mp ->
