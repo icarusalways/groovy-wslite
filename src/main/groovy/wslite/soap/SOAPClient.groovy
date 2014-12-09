@@ -27,6 +27,8 @@ class SOAPClient {
 
     boolean mtomEnabled = false
 
+    boolean wellFormatted = true
+
     SOAPClient() {
         this.httpClient = new HTTPClient()
     }
@@ -56,6 +58,12 @@ class SOAPClient {
     SOAPResponse send(Map requestParams=[:], SOAPVersion soapVersion, String content) {
         HTTPRequest httpRequest
         HTTPResponse httpResponse
+        if(!wellFormatted){
+            //replace all new lines, carriage returns, and tabs 
+            content =  content.replaceAll("[\n\r\t]", "")
+            //replace all space left between tags
+            content = content.replaceAll("> *<", "><")
+        }
         def httpRequestParams = new LinkedHashMap(requestParams ?: [:])
         try {
             httpRequest = buildHTTPRequest(httpRequestParams, soapVersion, content)
