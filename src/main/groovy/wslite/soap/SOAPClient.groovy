@@ -22,10 +22,6 @@ class SOAPClient {
     String serviceURL
     HTTPClient httpClient
 
-    boolean validating = false
-    boolean namespaceAware = true
-    boolean allowDocTypeDeclaration = true
-
     SOAPClient() {
         this.httpClient = new HTTPClient()
     }
@@ -45,19 +41,28 @@ class SOAPClient {
 
     SOAPResponse send(Map requestParams=[:], Closure content) {
         def message = new SOAPMessageBuilder().build(content)
-        return send(requestParams, message.version, message.toString())
+        return send(requestParams, [:], message.version, message.toString())
     }
 
     SOAPResponse send(Map requestParams=[:], String content) {
-        return send(requestParams, detectSOAPVersion(content), content)
+        return send(requestParams, [:], detectSOAPVersion(content), content)
     }
 
-    SOAPResponse send(Map requestParams=[:], SOAPVersion soapVersion, String content) {
+    //Added to support sending HTTP Headers in request.
+    SOAPResponse send(Map requestParams, Map http_headers, Closure content) {
+        def message = new SOAPMessageBuilder().build(content)
+        requestParams = new LinkedHashMap(requestParams ?: [:]) 
+        http_headers = new LinkedHashMap(http_headers ?: [:])
+        return send(requestParams, http_headers, message.version, message.toString())
+    }
+
+    SOAPResponse send(Map requestParams=[:], Map headers=[:], SOAPVersion soapVersion, String content) {
         HTTPRequest httpRequest
         HTTPResponse httpResponse
         def httpRequestParams = new LinkedHashMap(requestParams ?: [:])
+        def httpRequestHeaders = new LinkedHashMap(headers ?: [:])
         try {
-            httpRequest = buildHTTPRequest(httpRequestParams, soapVersion, content)
+            httpRequest = buildHTTPRequest(httpRequestParams, headers, soapVersion, content)
             httpResponse = httpClient.execute(httpRequest)
         } catch (HTTPClientException httpEx) {
             generateSOAPFaultException(httpEx)
@@ -71,7 +76,7 @@ class SOAPClient {
         return soapResponse
     }
 
-    private HTTPRequest buildHTTPRequest(requestParams, soapVersion, message) {
+    private HTTPRequest buildHTTPRequest(requestParams, requestHeaders, soapVersion, message) {
         def soapAction = requestParams.remove(SOAP.SOAP_ACTION_HEADER)
         def httpRequest = new HTTPRequest(requestParams)
         httpRequest.url = new URL(serviceURL)
@@ -80,6 +85,7 @@ class SOAPClient {
         setContentTypeHeaderIfNotPresent(httpRequest, soapVersion, charEncoding)
         setSoapActionHeaderIfNotPresent(httpRequest, soapVersion, soapAction)
         httpRequest.data = message.getBytes(charEncoding)
+        httpRequest.setHeaders(requestHeaders)
         return httpRequest
     }
 
@@ -99,7 +105,7 @@ class SOAPClient {
     }
 
     private parseEnvelope(String soapMessageText) {
-        def envelopeNode = new XmlSlurper(validating, namespaceAware, allowDocTypeDeclaration).parseText(soapMessageText)
+        def envelopeNode = new XmlSlurper().parseText(soapMessageText)
         if (envelopeNode.name() != SOAP.ENVELOPE_ELEMENT_NAME) {
             throw new IllegalStateException('Root element is ' + envelopeNode.name() +
                     ', expected ' + SOAP.ENVELOPE_ELEMENT_NAME)
@@ -166,7 +172,7 @@ class SOAPClient {
     private SOAPVersion detectSOAPVersion(String content) {
         SOAPVersion sv = SOAPVersion.V1_1
         try {
-            if (SOAP.SOAP12_NS == new XmlSlurper(validating, namespaceAware, allowDocTypeDeclaration).parseText(content).namespaceURI()) {
+            if (SOAP.SOAP12_NS == new XmlSlurper().parseText(content).namespaceURI()) {
                 sv = SOAPVersion.V1_2
             }
         } catch (Exception ex) { }

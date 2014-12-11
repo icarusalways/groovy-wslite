@@ -1,4 +1,4 @@
-/* Copyright 2011-2014 the original author or authors.
+/* Copyright 2011 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,10 @@
  */
 package wslite.rest
 
+import groovy.json.JsonOutput   //Added to support creation of JSON payload from a closure.    
 import groovy.xml.*
-import groovy.json.*
 import wslite.http.*
+import wslite.json.*
 import wslite.rest.multipart.BodyPart
 
 class ContentBuilder {
@@ -98,12 +99,18 @@ class ContentBuilder {
 
     void json(Map content) {
         dataContentType = ContentType.JSON
-        data = JsonOutput.toJson(content)?.getBytes(getCharset())
+        data = new JSONObject(content).toString()?.getBytes(getCharset())
     }
 
     void json(List content) {
         dataContentType = ContentType.JSON
-        data = JsonOutput.toJson(content)?.getBytes(getCharset())
+        data = new JSONArray(content).toString()?.getBytes(getCharset())
+    }
+
+    //Added to support creation of JSON payload from a closure.    
+    void json(Closure content) {
+        dataContentType = ContentType.JSON
+        data = JsonOutput.toJson(content).toString()?.getBytes(getCharset())
     }
 
     String getCharset() {
@@ -122,10 +129,6 @@ class ContentBuilder {
     }
 
     private String getContentType() {
-        // Ignore defaultContentType if request includes multipart data
-        if (multipartData && ContentType.MULTIPART.equals(dataContentType)) {
-            return dataContentType.toString()
-        }
         return contentType ?: dataContentType.toString()
     }
 
