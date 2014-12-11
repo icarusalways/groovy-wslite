@@ -48,7 +48,7 @@ class SOAPClient {
         return send(requestParams, [:], detectSOAPVersion(content), content)
     }
 
-    //Added by HealthNow to support sending HTTP Headers in request.
+    //Added to support sending HTTP Headers in request.
     SOAPResponse send(Map requestParams, Map http_headers, Closure content) {
         def message = new SOAPMessageBuilder().build(content)
         requestParams = new LinkedHashMap(requestParams ?: [:]) 

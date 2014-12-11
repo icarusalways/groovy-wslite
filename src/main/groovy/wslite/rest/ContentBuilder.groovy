@@ -14,7 +14,7 @@
  */
 package wslite.rest
 
-import groovy.json.JsonOutput   //Added by HealthNow to support creation of JSON payload from a closure.    
+import groovy.json.JsonOutput   //Added to support creation of JSON payload from a closure.    
 import groovy.xml.*
 import wslite.http.*
 import wslite.json.*
@@ -107,7 +107,7 @@ class ContentBuilder {
         data = new JSONArray(content).toString()?.getBytes(getCharset())
     }
 
-    //Added by HealthNow to support creation of JSON payload from a closure.    
+    //Added to support creation of JSON payload from a closure.
     void json(Closure content) {
         dataContentType = ContentType.JSON
         data = JsonOutput.toJson(content).toString()?.getBytes(getCharset())
